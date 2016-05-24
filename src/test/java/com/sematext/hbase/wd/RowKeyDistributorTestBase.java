@@ -18,8 +18,9 @@ package com.sematext.hbase.wd;
 import java.io.IOException;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
@@ -33,8 +34,10 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.output.NullOutputFormat;
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 /**
@@ -48,27 +51,36 @@ public abstract class RowKeyDistributorTestBase {
   protected static final byte[] CF = Bytes.toBytes("colfam");
   protected static final byte[] QUAL = Bytes.toBytes("qual");
   private final AbstractRowKeyDistributor keyDistributor;
-  private HBaseTestingUtility testingUtility;
+  private static HBaseTestingUtility testingUtility;
   private HTable hTable;
 
   public RowKeyDistributorTestBase(AbstractRowKeyDistributor keyDistributor) {
     this.keyDistributor = keyDistributor;
   }
 
-  @Before
-  public void before() throws Exception {
+  @BeforeClass
+  public static void setUp() throws Exception {
     testingUtility = new HBaseTestingUtility();
     testingUtility.startMiniZKCluster();
     testingUtility.startMiniCluster(1);
+  }
+
+  @AfterClass
+  public static void tearDown() throws Exception {
+    testingUtility.shutdownMiniCluster();
+    testingUtility.shutdownMiniZKCluster();
+    testingUtility = null;
+  }
+
+  @Before
+  public void before() throws Exception {
     hTable = testingUtility.createTable(TABLE, CF);
   }
 
   @After
   public void after() throws Exception {
+    testingUtility.deleteTable(TABLE);
     hTable = null;
-    testingUtility.shutdownMiniCluster();
-    testingUtility.shutdownMiniZKCluster();
-    testingUtility = null;
   }
 
   /** Testing simple get. */
@@ -79,7 +91,7 @@ public abstract class RowKeyDistributorTestBase {
     byte[] distributedKey = keyDistributor.getDistributedKey(key);
     byte[] value = Bytes.toBytes("some");
 
-    hTable.put(new Put(distributedKey).add(CF, QUAL, value));
+    hTable.put(new Put(distributedKey).addColumn(CF, QUAL, value));
 
     Result result = hTable.get(new Get(distributedKey));
     Assert.assertArrayEquals(key, keyDistributor.getOriginalKey(result.getRow()));
@@ -144,7 +156,7 @@ public abstract class RowKeyDistributorTestBase {
       byte[] key = Bytes.toBytes(origKeyPrefix + val);
       byte[] distributedKey = keyDistributor.getDistributedKey(key);
       byte[] value = Bytes.toBytes(val);
-      hTable.put(new Put(distributedKey).add(CF, QUAL, value));
+      hTable.put(new Put(distributedKey).addColumn(CF, QUAL, value));
     }
     return valuesCountInSeekInterval;
   }
@@ -184,7 +196,7 @@ public abstract class RowKeyDistributorTestBase {
 
     // Reading data
     Configuration conf = testingUtility.getConfiguration();
-    Job job = new Job(conf, "testMapReduceInternal()-Job");
+    Job job = Job.getInstance(conf, "testMapReduceInternal()-Job");
     job.setJarByClass(this.getClass());
     TableMapReduceUtil.initTableMapperJob(TABLE_NAME, scan,
             RowCounterMapper.class, ImmutableBytesWritable.class, Result.class, job);
@@ -213,8 +225,8 @@ public abstract class RowKeyDistributorTestBase {
 
     @Override
     public void map(ImmutableBytesWritable row, Result values, Context context) throws IOException {
-      for (KeyValue value: values.list()) {
-        if (value.getValue().length > 0) {
+      for (Cell cell: values.listCells()) {
+        if (CellUtil.cloneValue(cell).length > 0) {
           context.getCounter(Counters.ROWS).increment(1);
           break;
         }
